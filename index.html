@@ -620,6 +620,65 @@ async function transcribeCore(x0, sr, opt, onProg){
     }
     if(start>=0) close(last,fixedStart);
   }
+  // ---- onset pass: find newly struck pitches (repeated notes, soft passing notes) ----
+  const spec=(t,out)=>{ const o=Math.max(0,Math.min(nF-1,t))*H; for(let i=0;i<N;i++){ re[i]=(x[o+i]||0)/peak*win[i]; im[i]=0; } fftL(re,im); for(let k=0;k<N/2;k++) out[k]=Math.hypot(re[k],im[k]); if(t<0) out.fill(0); return out; };
+  const salOf=(M,k)=>{ const b=HB[k],w=HW[k]; let s=0,m1=0,mx=0; for(let h=0;h<b.length;h++){ const j=b[h]; if(j<1||j>=N/2-1) continue; const m=Math.max(M[j-1],M[j],M[j+1]); s+=m*w[h]; if(h===0)m1=m; if(m>mx)mx=m; } if(k+P0>=45&&mx>0) s*=0.4+0.6*Math.min(1,m1/(0.5*mx)); return s; };
+  const SA=new Float64Array(N/2), SB=new Float64Array(N/2), cA=new Float64Array(N/2), cB=new Float64Array(N/2), D=new Float64Array(N/2), tmp=new Float64Array(N/2);
+  const cands=[], Dsave=new Map();
+  const onF=[]; for(let t=0;t<nF;t++) if(isOn[t]) onF.push(t);
+  for(let oi=0;oi<onF.length;oi++){ const t0=onF[oi];
+    spec(t0+4,SA); spec(t0-4,SB);
+    for(let k=0;k<N/2;k++){ cA[k]=Math.sqrt(SA[k]); cB[k]=Math.sqrt(SB[k]); D[k]=Math.sqrt(Math.max(0,SA[k]-1.1*SB[k])); }
+    Dsave.set(t0,Float32Array.from(D.subarray(0,Math.min(N/2,Math.ceil(7200/binHz)))));
+    let first=0;
+    for(let it=0;it<Math.min(opt.poly,4);it++){ let best=-1,bs=0; for(let k=0;k<NP;k++){ const s=salOf(D,k); if(s>bs){bs=s;best=k;} } if(best<0) break;
+      if(it===0) first=bs; else if(bs<first*.35) break;
+      cands.push({t0,k:best,sD:bs,sA:salOf(cA,best),sB:salOf(cB,best),first:it===0});
+      for(const j0 of HB[best]) for(let j=j0-2;j<=j0+2;j++) if(j>=0&&j<N/2) D[j]*=.1; }
+    if(onProg&&oi%40===0){ await new Promise(r=>setTimeout(r,0)); }
+  }
+  const fr=cands.filter(c=>c.first).map(c=>c.sD).sort((a,b)=>a-b); const refD=fr[Math.floor(fr.length*.8)]||1;
+  const HARM=[0,12,19,24,28,31,34,36];
+  const binS=sr/Ns, HBs=HB.map((_,k)=>{ const f0=440*Math.pow(2,(k+P0-69)/12), b=[]; for(let h=1;h<=10;h++){ const f=f0*h; if(f>Math.min(sr/2-300,7000)) break; b.push(Math.round(f/binS)); } return b; });
+  const SAs=new Float64Array(Ns/2), SBs=new Float64Array(Ns/2);
+  const specS=(c,out)=>{ const o=c-Ns/2; for(let i=0;i<Ns;i++){ reS[i]=(x[o+i]||0)/peak*winS[i]; imS[i]=0; } fftS(reS,imS); for(let k=0;k<Ns/2;k++) out[k]=Math.hypot(reS[k],imS[k]); return out; };
+  const hiEs=(M,k,exclF)=>{ let e=0,cnt=0; const b=HBs[k]; for(let h=1;h<b.length;h++){ const j=b[h]; if(j<1||j>=Ns/2-1) continue; const f=j*binS; if(exclF.some(x=>Math.abs(x-f)<binS*1.5)) continue; e+=Math.max(M[j-1],M[j],M[j+1]); cnt++; } return cnt>=2?e:-1; };
+  const byOn=new Map(); for(const c of cands){ if(!byOn.has(c.t0)) byOn.set(c.t0,[]); byOn.get(c.t0).push(c); }
+  const hiE=(M,k,excl)=>{ let e=0,cnt=0; const b=HB[k]; for(let h=1;h<b.length&&h<8;h++){ const j=b[h]; if(j<1||j>=N/2-1) continue; if(excl.some(x=>Math.abs(x-j)<=2)) continue; e+=Math.max(M[j-1],M[j],M[j+1]); cnt++; } return cnt>=3?e:-1; };
+  for(const t0 of onF){ const tOn=ft(t0); const cs=byOn.get(t0)||[];
+    const active=notes.filter(q=>q.s<tOn-.1&&q.s+q.d>tOn-.02);
+    // 1) brand-new pitches from the positive spectral difference; a pick that sits on the harmonic series of a
+    //    sounding note is either that note being struck again, or a genuinely new note (e.g. the octave above)
+    const Dd=Dsave.get(t0), eAt=j=>j>=1&&j<Dd.length-1?Math.max(Dd[j-1],Dd[j],Dd[j+1]):0;
+    const evidence=new Set(), fresh=[];
+    for(const c of cs){ if(!(c.sD>=refD*(0.3-0.2*opt.sens)*.5)) continue;
+      const strong=c.sD>=refD*(0.3-0.2*opt.sens)&&(c.sA>=1.25*c.sB||c.sD>=.3*c.sA)&&c.sA>=absThr*.6;
+      const qs=active.filter(q=>HARM.includes(c.k+P0-q.p));
+      if(!qs.length){ if(strong) fresh.push(c); continue; }
+      let isNew=strong;
+      for(const q of qs){ if(q.p===c.k+P0){ evidence.add(q); isNew=false; continue; }
+        const kb=HB[c.k], qb=HB[q.p-P0]; let kE=0,qE=0; for(const j of kb) kE+=eAt(j); for(const j of qb){ if(kb.some(x=>Math.abs(x-j)<=2)) continue; qE+=eAt(j); }
+        if(qE>=.25*kE){ evidence.add(q); isNew=false; } }
+      if(isNew) fresh.push(c); }
+    const exclF=[]; for(const c of fresh) for(const j of HB[c.k]) exclF.push(j*binHz);
+    const cS=t0*H+N/2; specS(cS+Math.round(.035*sr),SAs); specS(cS-Math.round(.045*sr),SBs);
+    // 2) re-strikes of notes that are still sounding: their upper partials jump back up
+    for(const q of active){ const k=q.p-P0; if(k<0||k>=NP) continue; const eA=hiEs(SAs,k,exclF), eB=hiEs(SBs,k,exclF); if(eA<0||eB<=0) continue;
+      if((eA>=1.8*eB||(eA>=1.15*eB&&evidence.has(q)))&&eA>1e-3){ const end=q.s+q.d; q.d=Math.max(.03,tOn-q.s-.02); notes.push({p:q.p,s:tOn,d:Math.max(opt.minLen,end-tOn),pk:q.pk}); } }
+    for(const c of fresh){ const p=c.k+P0;
+      const n=notes.find(q=>q.p===p&&q.s<=tOn+.08&&q.s+q.d>=tOn-.02);
+      if(n&&Math.abs(n.s-tOn)<=.1) continue;
+      if(n){ const end=n.s+n.d; n.d=Math.max(.03,tOn-n.s-.02); notes.push({p,s:tOn,d:Math.max(opt.minLen,end-tOn),pk:Math.max(c.sA,n.pk*.8)}); continue; }
+      const nextOn=onF.find(t=>t>t0&&(byOn.get(t)||[]).some(q=>q.k===c.k&&q.sD>=.3*q.sA)); const limit=nextOn?nextOn-1:Math.min(nF-1,t0+110);
+      let tEnd=t0+4; for(let t=t0+8;t<=limit;t+=4){ spec(t,tmp); for(let k=0;k<N/2;k++) tmp[k]=Math.sqrt(tmp[k]); if(salOf(tmp,c.k)<c.sA*.35) break; tEnd=t; }
+      const d=ft(tEnd)-tOn; if(d>=opt.minLen) notes.push({p,s:tOn,d,pk:c.sA}); }
+  }
+  // tidy: merge duplicates of the same pitch, trim overlaps
+  notes.sort((a,b)=>a.p-b.p||a.s-b.s);
+  for(let i=0;i<notes.length-1;i++){ const a=notes[i], b=notes[i+1]; if(a.p!==b.p) continue;
+    if(b.s-a.s<.06){ const e=Math.max(a.s+a.d,b.s+b.d); a.d=e-a.s; a.pk=Math.max(a.pk,b.pk); notes.splice(i+1,1); i--; }
+    else if(b.s<a.s+a.d-.01){ a.d=Math.max(.03,b.s-a.s-.01); } }
+  notes=notes.filter(n=>n.d>=Math.min(opt.minLen,.05));
   // octave ghost cleanup
   notes=notes.filter(q=>!notes.some(r=>r!==q&&Math.abs(r.p-q.p)===12&&r.pk>q.pk*2.5&&Math.min(r.s+r.d,q.s+q.d)-Math.max(r.s,q.s)>0.7*q.d));
   notes.sort((a,b)=>a.s-b.s||a.p-b.p);
