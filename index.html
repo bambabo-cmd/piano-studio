@@ -179,7 +179,7 @@ details.help ol{margin:6px 0 0;padding-left:20px}
     <label>입력 <select id="recSrc"><option value="mic">마이크</option><option value="midi">MIDI 케이블</option></select></label>
     <label><input type="checkbox" id="playAlong" checked> 다른 트랙 들으며 녹음</label>
     <label><input type="checkbox" id="keepAudio" checked> 원음도 보관</label>
-    <label title="노래, 허밍, 휘파람, 리코더, 바이올린처럼 피아노가 아닌 소리를 한 음씩 악보로 만들어요"><input type="checkbox" id="anySound"> 모든 소리 악보화 (노래·휘파람·다른 악기)</label>
+    <label title="노래·허밍·휘파람처럼 한 번에 한 음만 나는 소리는 멜로디 전용 방식이 더 깔끔해요. 끄면 AI 인식(피아노·기타·여러 악기·화음)을 써요"><input type="checkbox" id="anySound"> 노래·휘파람은 한 음씩 읽기</label>
     <button id="importAudio">녹음 파일 불러오기</button>
    </div>
    <div class="transport">
@@ -202,7 +202,7 @@ details.help ol{margin:6px 0 0;padding-left:20px}
     <li>아래 악보판에서 음표를 끌어 옮기고, 오른쪽 끝을 끌어 길이를 바꿔요. 두 번 누르면 추가/삭제.</li>
     <li>겹쳐 녹음할 땐 이어폰을 쓰면 스피커 소리가 섞이지 않아요.</li>
     <li>연습할 때 맨 위 ‘♩ 메트로놈’ 버튼으로 메트로놈만 따로 켤 수 있어요.</li>
-    <li>노래나 휘파람, 다른 악기는 ‘모든 소리 악보화’를 켜고 녹음하세요. 한 번에 한 음씩 나는 소리에 맞춰져 있어요.</li>
+    <li>악보는 AI 인식(피아노·기타·여러 악기·화음)으로 만들어요. 노래나 휘파람처럼 한 음씩 나는 소리는 ‘노래·휘파람은 한 음씩 읽기’를 켜면 더 깔끔해요.</li>
    </ol></details>
   </div>
  </section>
@@ -353,7 +353,10 @@ const DB={db:null,
 };
 let project=null, songList=[];
 const sampleCache=new Map(); // trackId -> {x:Float32Array, sr}
-const bufCache=new Map(); const contourCache=new Map(); // trackId -> {hop,m,offset}    // trackId -> AudioBuffer
+const bufCache=new Map(); const contourCache=new Map(); // trackId -> {hop,m,offset}
+const aiCache=new Map(); // trackId -> model output
+let bpLoad=null;
+function loadBP(){ if(window.BP) return Promise.resolve(window.BP); if(!bpLoad){ bpLoad=new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='bp.bundle.js'; s.onload=()=>window.BP?res(window.BP):rej(new Error('no BP')); s.onerror=()=>{ bpLoad=null; rej(new Error('load')); }; document.head.appendChild(s); }); } return bpLoad; }    // trackId -> AudioBuffer
 let saveT=null;
 function newProject(name){return {id:uid(),name:name||'새 곡',bpm:100,beatsPerBar:4,tracks:[],updatedAt:Date.now()};}
 function scheduleSave(){ clearTimeout(saveT); saveT=setTimeout(saveNow,600); }
@@ -361,7 +364,7 @@ async function saveNow(){ if(!project) return; project.updatedAt=Date.now(); try
 async function updateStorage(){ try{ if(navigator.storage&&navigator.storage.estimate){ const e=await navigator.storage.estimate(); $('#storageLbl').textContent='이 브라우저 사용량 '+fmtBytes(e.usage||0); } }catch(e){} }
 async function refreshSongList(){ const all=(await DB.all('projects'))||[]; songList=all.map(p=>({id:p.id,name:p.name,updatedAt:p.updatedAt})).sort((a,b)=>b.updatedAt-a.updatedAt); if(project&&!songList.some(s=>s.id===project.id)) songList.unshift({id:project.id,name:project.name}); const sel=$('#songSel'); sel.innerHTML=''; for(const s of songList){const o=document.createElement('option'); o.value=s.id; o.textContent=s.name; if(project&&s.id===project.id)o.selected=true; sel.appendChild(o);} }
 async function loadProject(id){ stop(); const p=await DB.get('projects',id); if(!p) return; setProject(p); }
-function setProject(p){ project=p; sampleCache.clear(); bufCache.clear(); contourCache.clear(); undoStack=[]; redoStack=[]; selected.clear(); pos=0; activeTrackId=p.tracks[0]?p.tracks[0].id:null; p.beatsPerBar=p.beatsPerBar||4; $('#songName').value=p.name; $('#bpm').value=p.bpm; $('#bpb').value=p.beatsPerBar; tapMarks=[]; range=null; updateTapUI(); updateRangeUI(); renderBeats(); renderTracks(); fitView(); drawRoll(); refreshSongList(); }
+function setProject(p){ project=p; sampleCache.clear(); bufCache.clear(); contourCache.clear(); aiCache.clear(); undoStack=[]; redoStack=[]; selected.clear(); pos=0; activeTrackId=p.tracks[0]?p.tracks[0].id:null; p.beatsPerBar=p.beatsPerBar||4; $('#songName').value=p.name; $('#bpm').value=p.bpm; $('#bpb').value=p.beatsPerBar; tapMarks=[]; range=null; updateTapUI(); updateRangeUI(); renderBeats(); renderTracks(); fitView(); drawRoll(); refreshSongList(); }
 
 /* ================= tracks ================= */
 let activeTrackId=null;
@@ -387,7 +390,7 @@ function renderTracks(){
     row.querySelector('.vol').oninput=e=>{t.volume=+e.target.value; applyTrackGains(); scheduleSave();};
     row.querySelector('.m').onclick=e=>{e.stopPropagation(); t.muted=!t.muted; applyTrackGains(); renderTracks(); scheduleSave(); drawRoll();};
     row.querySelector('.s').onclick=e=>{e.stopPropagation(); t.solo=!t.solo; applyTrackGains(); renderTracks(); scheduleSave(); drawRoll();};
-    row.querySelector('.x').onclick=async e=>{e.stopPropagation(); if(await confirmBox(`‘${t.name}’ 트랙을 지울까요? 되돌릴 수 없어요.`,'지우기')){ project.tracks=project.tracks.filter(x=>x!==t); sampleCache.delete(t.id); bufCache.delete(t.id); contourCache.delete(t.id); if(activeTrackId===t.id) activeTrackId=project.tracks[0]?project.tracks[0].id:null; undoStack=undoStack.filter(u=>!u.items.some(i=>i.id===t.id)); redoStack=[]; renderTracks(); drawRoll(); scheduleSave(); }};
+    row.querySelector('.x').onclick=async e=>{e.stopPropagation(); if(await confirmBox(`‘${t.name}’ 트랙을 지울까요? 되돌릴 수 없어요.`,'지우기')){ project.tracks=project.tracks.filter(x=>x!==t); sampleCache.delete(t.id); bufCache.delete(t.id); contourCache.delete(t.id); aiCache.delete(t.id); if(activeTrackId===t.id) activeTrackId=project.tracks[0]?project.tracks[0].id:null; undoStack=undoStack.filter(u=>!u.items.some(i=>i.id===t.id)); redoStack=[]; renderTracks(); drawRoll(); scheduleSave(); }};
     row.addEventListener('click',e=>{ if(e.target.closest('input,select,button')) return; if(activeTrackId!==t.id){activeTrackId=t.id; selected.clear(); renderTracks(); drawRoll();} });
     row.querySelectorAll('input,select').forEach(el=>el.addEventListener('focus',()=>{ if(activeTrackId!==t.id){activeTrackId=t.id; selected.clear(); document.querySelectorAll('.track').forEach(r=>r.classList.toggle('active',r.dataset.id===t.id)); renderAnalysis(); updateTitle(); drawRoll();} }));
     box.appendChild(row);
@@ -401,11 +404,11 @@ function renderAnalysis(){
   if(!t){ box.innerHTML='<span class="hint">트랙을 고르면 여기서 악보 만들기 설정을 바꿀 수 있어요.</span>'; return; }
   if(!t.audio){ box.innerHTML=`<span class="hint">${t.notes.length? '원음 없이 악보만 보관 중인 트랙이에요. 용량을 거의 차지하지 않아요.':'원음이 없는 빈 트랙이에요. ‘그리기’로 음표를 직접 넣을 수 있어요.'}</span>`; return; }
   const a=t.analysis||(t.analysis={sens:.5,poly:4,minLen:.07}); if(!a.mode) a.mode='piano'; if(!a.src) a.src='auto'; if(a.tune===undefined) a.tune=true;
-  const any=a.mode==='any';
-  box.innerHTML=`<label>악보 만드는 방식 <select id="anMode"><option value="piano"${any?'':' selected'}>피아노 (화음까지)</option><option value="any"${any?' selected':''}>모든 소리 (한 음씩)</option></select></label>
+  const any=a.mode==='any', ai=a.mode==='ai';
+  box.innerHTML=`<label>악보 만드는 방식 <select id="anMode"><option value="ai"${ai?' selected':''}>AI 인식 (추천 · 피아노·여러 악기·화음)</option><option value="any"${any?' selected':''}>한 음씩 (노래·휘파람 전용)</option><option value="piano"${ai||any?'':' selected'}>기본 분석 (예전 방식)</option></select></label>
    ${any?`<label>소리 종류 <select id="anSrc">${[['auto','자동 (넓게)'],['voice','노래·허밍'],['high','휘파람·리코더·바이올린'],['low','낮은 소리 (첼로·낮은 목소리)']].map(([v,l])=>`<option value="${v}"${v===a.src?' selected':''}>${l}</option>`).join('')}</select></label>
    <label title="노래가 전체적으로 조금 높거나 낮게 불렸을 때 가까운 음으로 맞춰 읽어요"><input type="checkbox" id="anTune"${a.tune?' checked':''}> 음정 기울기 보정</label>`
-   :`<label>동시에 누른 음 최대 <select id="anPoly">${[1,2,3,4,5,6].map(n=>`<option${n==a.poly?' selected':''}>${n}</option>`).join('')}</select></label>`}
+   :ai?'':`<label>동시에 누른 음 최대 <select id="anPoly">${[1,2,3,4,5,6].map(n=>`<option${n==a.poly?' selected':''}>${n}</option>`).join('')}</select></label>`}
    <label>민감도 <input type="range" id="anSens" min="0" max="1" step="0.05" value="${a.sens}"></label>
    <label>너무 짧은 음 무시 <select id="anMin">${[[.04,'아주 짧게'],[.07,'보통'],[.12,'길게'],[.2,'더 길게']].map(([v,l])=>`<option value="${v}"${v==a.minLen?' selected':''}>${l}</option>`).join('')}</select></label>
    <button id="anRun">다시 악보 만들기</button>
@@ -414,13 +417,13 @@ function renderAnalysis(){
    <button id="anSave">원음 저장</button><button id="anDrop">원음 지우고 악보만 남기기</button>`;
   $('#anMode').onchange=e=>{a.mode=e.target.value; scheduleSave(); renderAnalysis();};
   if(any){ $('#anSrc').onchange=e=>{a.src=e.target.value; scheduleSave();}; $('#anTune').onchange=e=>{a.tune=e.target.checked; scheduleSave();}; }
-  else $('#anPoly').onchange=e=>{a.poly=+e.target.value; scheduleSave();};
+  else if(!ai) $('#anPoly').onchange=e=>{a.poly=+e.target.value; scheduleSave();};
   if($('#anCont')) $('#anCont').onchange=e=>{roll.showContour=e.target.checked; drawRoll();};
   $('#anSens').onchange=e=>{a.sens=+e.target.value; scheduleSave();};
   $('#anMin').onchange=e=>{a.minLen=+e.target.value; scheduleSave();};
   $('#anRun').onclick=()=>runTranscription(t,true);
   $('#anSave').onclick=()=>saveAudioFile(t);
-  $('#anDrop').onclick=async()=>{ if(await confirmBox('원음을 지우면 용량이 줄지만, 다시 악보 만들기와 ‘원래 녹음 소리’ 재생은 못 해요. 지울까요?','원음 지우기')){ t.audio=null; if(t.instrument==='audio') t.instrument='piano'; sampleCache.delete(t.id); bufCache.delete(t.id); contourCache.delete(t.id); renderTracks(); scheduleSave(); toast('원음을 지웠어요. 악보는 그대로예요.'); } };
+  $('#anDrop').onclick=async()=>{ if(await confirmBox('원음을 지우면 용량이 줄지만, 다시 악보 만들기와 ‘원래 녹음 소리’ 재생은 못 해요. 지울까요?','원음 지우기')){ t.audio=null; if(t.instrument==='audio') t.instrument='piano'; sampleCache.delete(t.id); bufCache.delete(t.id); contourCache.delete(t.id); aiCache.delete(t.id); renderTracks(); scheduleSave(); toast('원음을 지웠어요. 악보는 그대로예요.'); } };
 }
 /* ================= playback ================= */
 let playing=false, pos=0, playCtx0=0, playPos0=0, schedTimer=null, schedHorizon=0, voices=[], audioSrcs=[], sched=[];
@@ -531,7 +534,7 @@ async function decodeToMono(blob){ ensureCtx(); const ab=await blob.arrayBuffer(
 async function createTrackFromAudio(blob,startPos,mime,name){
   const keep=$('#keepAudio').checked;
   const any=$('#anySound').checked;
-  const t=addTrack({audio:blob,audioType:mime||blob.type||'',audioName:name||'',audioOffset:startPos,analysis:{sens:.5,poly:4,minLen:.07,mode:any?'any':'piano',src:'auto',tune:true}}); renderTracks();
+  const t=addTrack({audio:blob,audioType:mime||blob.type||'',audioName:name||'',audioOffset:startPos,analysis:{sens:.5,poly:4,minLen:.07,mode:any?'any':'ai',src:'auto',tune:true}}); renderTracks();
   const ok=await runTranscription(t,false);
   if(!ok&&!t.notes.length){ /* keep track so audio isn't lost */ }
   if(!keep){ t.audio=null; sampleCache.delete(t.id); bufCache.delete(t.id); }
@@ -543,10 +546,17 @@ async function runTranscription(t,undoable){
     let c=sampleCache.get(t.id);
     if(!c){ const d=await decodeToMono(t.audio); c={x:d.x,sr:d.sr}; sampleCache.set(t.id,c); bufCache.set(t.id,d.buf); }
     const a=t.analysis||{sens:.5,poly:4,minLen:.07}; let res, extra='';
+    if(a.mode==='ai'||!a.mode){
+      let BP=null; try{ $('#ovMsg').textContent='AI 인식 준비 중… (처음 한 번은 3MB 모델을 읽어요)'; BP=await loadBP(); }catch(e){ BP=null; }
+      if(!BP){ toast('AI 인식 파일을 불러오지 못해 피아노 방식으로 읽어요. 인터넷 연결 후 다시 시도해 보세요.',6000); a.mode='piano'; }
+      else { $('#ovMsg').textContent='AI가 음을 듣고 있어요…'; let out=aiCache.get(t.id); if(!out){ out=await BP.analyze(c.x,p=>setOverlayProg(p)); aiCache.set(t.id,out); }
+        const sens=a.sens==null?.5:a.sens; res=BP.notesFrom(out,{onsetThresh:.8-.4*sens,frameThresh:.7-.4*sens,minNoteLen:Math.max(3,Math.round(a.minLen*86)),minFreq:27,maxFreq:4200}).filter(n=>n.p>=21&&n.p<=108);
+        contourCache.delete(t.id); }
+    }
     if(a.mode==='any'){ const r=await transcribeMelody(c.x,c.sr,{src:a.src||'auto',sens:a.sens,minLen:a.minLen,tune:a.tune!==false},p=>setOverlayProg(p)); res=r.notes;
       if(r.contour) contourCache.set(t.id,{hop:r.contour.hop,m:r.contour.m,offset:t.audioOffset}); else contourCache.delete(t.id);
       if(a.tune!==false&&Math.abs(r.tuning)>.12) extra=` 음정이 전체적으로 ${r.tuning>0?'조금 높아':'조금 낮아'}서(약 ${Math.round(Math.abs(r.tuning)*100)}센트) 맞춰서 읽었어요.`; }
-    else { contourCache.delete(t.id); res=await transcribeCore(c.x,c.sr,{poly:a.poly,rel:.3,sens:a.sens,minLen:a.minLen},p=>setOverlayProg(p)); }
+    else if(!res){ contourCache.delete(t.id); res=await transcribeCore(c.x,c.sr,{poly:a.poly,rel:.3,sens:a.sens,minLen:a.minLen},p=>setOverlayProg(p)); }
     const before=undoable?snapshot(t):null;
     t.notes=res.map(n=>({id:nid(),p:n.p,s:n.s+t.audioOffset,d:n.d,v:n.v}));
     if(before) pushUndo(before);
