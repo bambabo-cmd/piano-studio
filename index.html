@@ -942,12 +942,12 @@ async function stopRec(){
 function recUI(on){ const b=$('#recBtn'); b.classList.toggle('recording',on); $('#recLabel').textContent=on?'멈춤':'녹음'; $('#recHint').textContent=on?($('#recSrc').value==='midi'?'피아노 건반 신호를 받고 있어요.':'듣고 있어요. 다 치면 멈춤을 누르세요.'):'녹음 버튼을 누르고 연주해 보세요. 멈추면 자동으로 악보가 만들어져요.'; if(!on){ $('#recTime').textContent='0:00'; const m=$('#meter').getContext('2d'); m.clearRect(0,0,160,12);} }
 function recLoop(){ if(!recording) return; const el=(performance.now()-recording.t0)/1000; if(el<0){ $('#recTime').textContent=String(Math.ceil(-el/beatSec())); $('#recHint').textContent='박자를 세고 있어요. 숫자가 끝나면 시작하세요.'; } else { $('#recTime').textContent=fmtTime(el); if(!recording.shown){ recording.shown=true; $('#recHint').textContent=recording.kind==='midi'?'피아노 건반 신호를 받고 있어요.':'듣고 있어요. 다 치면 멈춤을 누르세요.'; } }
   const m=$('#meter').getContext('2d'); m.clearRect(0,0,160,12);
-  if(recording.an){ const d=new Float32Array(recording.an.fftSize); recording.an.getFloatTimeDomainData(d); let pk=0; for(const v of d) pk=Math.max(pk,Math.abs(v)); const w=Math.min(1,Math.sqrt(pk))*160; m.fillStyle=pk>.95?'#E0344A':getCss('--accent'); m.fillRect(0,0,w,12); }
+  if(recording.an){ const d=new Float32Array(recording.an.fftSize); recording.an.getFloatTimeDomainData(d); let pk=0; for(const v of d) pk=Math.max(pk,Math.abs(v)); const w=Math.min(1,Math.sqrt(pk))*160; m.fillStyle=pk>.95?'#E0344A':getCss('--accent'); m.fillRect(0,0,w,12); recording.pkMax=Math.max(recording.pkMax||0,pk); if(recording.shown&&performance.now()-recording.t0>4000&&(recording.pkMax||0)<.04&&!recording.warned){ recording.warned=true; $('#recHint').textContent='마이크에 소리가 거의 안 들어와요. 마이크를 피아노 가까이 두거나 음량을 올려 주세요.'; } }
   requestAnimationFrame(recLoop); }
 
 
 /* ================= transcription ================= */
-async function decodeToMono(blob){ ensureCtx(); const ab=await blob.arrayBuffer(); const buf=await ctx.decodeAudioData(ab); const sr=22050; const len=Math.max(1,Math.ceil(buf.duration*sr)); const off=new OfflineAudioContext(1,len,sr); const s=off.createBufferSource(); s.buffer=buf; s.connect(off.destination); s.start(); const r=await off.startRendering(); return {x:r.getChannelData(0),sr,buf}; }
+async function decodeToMono(blob){ ensureCtx(); const ab=await blob.arrayBuffer(); const buf=await ctx.decodeAudioData(ab); const sr=22050; const len=Math.max(1,Math.ceil(buf.duration*sr)); const off=new OfflineAudioContext(1,len,sr); const s=off.createBufferSource(); s.buffer=buf; s.connect(off.destination); s.start(); const r=await off.startRendering(); const x=r.getChannelData(0); let pk=0; for(let i=0;i<x.length;i++){ const a=Math.abs(x[i]); if(a>pk) pk=a; } const peak=pk; if(pk>1e-4&&pk<.9){ const g=.9/pk; for(let i=0;i<x.length;i++) x[i]*=g; } return {x,sr,buf,peak}; }
 async function createTrackFromAudio(blob,startPos,mime,name){
   const keep=$('#keepAudio').checked;
   const any=$('#anySound').checked;
@@ -961,13 +961,13 @@ async function runTranscription(t,undoable){
   showOverlay('악보를 만들고 있어요…',0);
   try{
     let c=sampleCache.get(t.id);
-    if(!c){ const d=await decodeToMono(t.audio); c={x:d.x,sr:d.sr}; sampleCache.set(t.id,c); bufCache.set(t.id,d.buf); }
+    if(!c){ const d=await decodeToMono(t.audio); c={x:d.x,sr:d.sr,peak:d.peak,dur:d.buf.duration}; sampleCache.set(t.id,c); bufCache.set(t.id,d.buf); }
     const a=t.analysis||{sens:.5,poly:4,minLen:.07}; let res, extra='';
     if(a.mode==='ai'||!a.mode){
       let BP=null; try{ $('#ovMsg').textContent='AI 인식 준비 중… (처음 한 번은 3MB 모델을 읽어요)'; BP=await loadBP(); }catch(e){ BP=null; }
       if(!BP){ toast('AI 인식 파일을 불러오지 못해 피아노 방식으로 읽어요. 인터넷 연결 후 다시 시도해 보세요.',6000); a.mode='piano'; }
       else { $('#ovMsg').textContent='AI가 음을 듣고 있어요…'; let out=aiCache.get(t.id); if(!out){ out=await BP.analyze(c.x,p=>setOverlayProg(p)); aiCache.set(t.id,out); }
-        const sens=a.sens==null?.5:a.sens; res=BP.notesFrom(out,{onsetThresh:.8-.4*sens,frameThresh:.7-.4*sens,minNoteLen:Math.max(3,Math.round(a.minLen*86)),minFreq:27,maxFreq:4200}).filter(n=>n.p>=21&&n.p<=108);
+        const sens=a.sens==null?.5:a.sens; res=BP.notesFrom(out,{onsetThresh:Math.max(.2,.85-.6*sens),frameThresh:Math.max(.15,.65-.5*sens),minNoteLen:Math.max(3,Math.round(a.minLen*86)),minFreq:27,maxFreq:4200}).filter(n=>n.p>=21&&n.p<=108);
         contourCache.delete(t.id); }
     }
     if(a.mode==='any'){ const r=await transcribeMelody(c.x,c.sr,{src:a.src||'auto',sens:a.sens,minLen:a.minLen,tune:a.tune!==false},p=>setOverlayProg(p)); res=r.notes;
@@ -978,7 +978,8 @@ async function runTranscription(t,undoable){
     t.notes=res.map(n=>({id:nid(),p:n.p,s:n.s+t.audioOffset,d:n.d,v:a.uniform?100:n.v})); if(a.hands!==false) assignHands(t.notes);
     if(before) pushUndo(before);
     hideOverlay(); selected.clear(); activeTrackId=t.id; renderTracks(); fitView(t); drawRoll(); scheduleSave(); reschedule();
-    toast(res.length?`음표 ${res.length}개를 찾았어요.${extra} 틀린 음은 악보판에서 고쳐 주세요.`:'음표를 찾지 못했어요. 민감도를 올리고 ‘다시 악보 만들기’를 눌러 보세요.',4500);
+    const lv=c.peak==null?'':c.peak<.03?` 녹음 소리가 매우 작아요(최대 ${Math.round(c.peak*100)}%). 마이크를 피아노 가까이 두세요.`:c.peak>=.99?' 녹음 소리가 너무 커서 찌그러졌을 수 있어요. 마이크를 조금 멀리 두세요.':'';
+    toast((res.length?`음표 ${res.length}개를 찾았어요.${extra} 틀린 음은 악보판에서 고쳐 주세요.`:`음표를 찾지 못했어요. 민감도를 올리고 ‘다시 악보 만들기’를 눌러 보세요.`)+lv,6000);
     return true;
   }catch(e){ hideOverlay(); toast('이 녹음 파일을 읽지 못했어요('+(e&&e.name||'오류')+'). 다른 형식(m4a, mp3, wav)으로 시도해 보세요.',6000); console.error(e); return false; }
 }
