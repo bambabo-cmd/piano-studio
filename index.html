@@ -69,6 +69,9 @@ h2{font-family:Jua,sans-serif;font-weight:400;font-size:20px;margin:6px 0 8px}
 .track .nm input:focus{border-color:var(--line);background:var(--paper)}
 .track .meta{font-size:12.5px;color:var(--muted);padding-left:5px}
 .track .btns{display:flex;gap:4px}
+.track .instw{display:flex;align-items:center;gap:6px;min-width:0}
+.track .instw span{font-size:13px;color:var(--muted);white-space:nowrap}
+.track .instw select{flex:1;min-width:0;width:100%}
 .track .btns button{min-width:38px;padding:4px 8px;white-space:nowrap}
 .track input[type=range]{width:100%}
 .empty{padding:18px;border:1px dashed var(--line);border-radius:14px;color:var(--muted);text-align:center}
@@ -76,7 +79,7 @@ h2{font-family:Jua,sans-serif;font-weight:400;font-size:20px;margin:6px 0 8px}
  .deck{grid-template-columns:1fr;justify-items:start}
  .deck .rec-col{justify-self:center}
  .track{grid-template-columns:8px 1fr auto}
- .track .inst{grid-column:2/3}
+ .track .instw{grid-column:2/3}
  .track .vol{grid-column:3/4}
  .track .bar{grid-row:1/3}
 }
@@ -250,6 +253,7 @@ body.roll-folded .editor .toolbar,body.roll-folded .editor .tempo,body.roll-fold
     <li>트랙마다 악기를 고르고 ▶ 재생하면 모든 트랙이 동시에 울려요.</li>
     <li>아래 악보판에서 음표를 끌어 옮기고, 오른쪽 끝을 끌어 길이를 바꿔요. 두 번 누르면 추가/삭제.</li>
     <li>겹쳐 녹음할 땐 이어폰을 쓰면 스피커 소리가 섞이지 않아요.</li>
+    <li>녹음 없이도 돼요: ‘＋ 빈 트랙’을 만든 뒤 악보판에서 ‘그리기’로 찍거나, ‘타이핑으로 넣기’에 계이름을 적으면 악보가 생겨요.</li>
     <li>연습할 때 맨 위 ‘♩ 메트로놈’ 버튼으로 메트로놈만 따로 켤 수 있어요.</li>
     <li>악보는 AI 인식(피아노·기타·여러 악기·화음)으로 만들어요. 노래나 휘파람처럼 한 음씩 나는 소리는 ‘노래·휘파람은 한 음씩 읽기’를 켜면 더 깔끔해요.</li>
    </ol></details>
@@ -257,7 +261,7 @@ body.roll-folded .editor .toolbar,body.roll-folded .editor .tempo,body.roll-fold
  </section>
 
  <section>
-  <div class="sec-head"><h2>트랙</h2><span class="hint" id="storageLbl"></span></div>
+  <div class="sec-head"><h2>트랙</h2><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button id="newTrackBtn">＋ 빈 트랙</button><button id="typeBtn">⌨ 타이핑으로 넣기</button><span class="hint" id="storageLbl"></span></div></div>
   <p class="hint" style="margin:0 0 8px">▶ 재생은 모든 트랙을 함께 들려줘요. 한 트랙만 들으려면 그 트랙의 ‘솔로’, 녹음한 소리 그대로 들으려면 ‘▶ 녹음 듣기’를 누르세요.</p>
   <div id="tracks"></div>
  </section>
@@ -757,13 +761,13 @@ function addTrack(opts){ const n=project.tracks.length; const used=new Set(proje
   project.tracks.push(t); activeTrackId=t.id; return t; }
 function renderTracks(){
   const box=$('#tracks'); box.innerHTML='';
-  if(!project.tracks.length){ box.innerHTML='<div class="empty">아직 트랙이 없어요. 위의 빨간 녹음 버튼으로 첫 연주를 담아 보세요.</div>'; renderAnalysis(); updateTitle(); return; }
+  if(!project.tracks.length){ box.innerHTML='<div class="empty">아직 트랙이 없어요. 빨간 녹음 버튼으로 연주를 담거나, ‘＋ 빈 트랙’을 만들어 그리기·타이핑으로 직접 넣을 수 있어요.</div>'; renderAnalysis(); updateTitle(); return; }
   for(const t of project.tracks){
     const row=document.createElement('div'); row.className='track'+(t.id===activeTrackId?' active':''); row.dataset.id=t.id;
     const instOpts=INSTR.map(i=>`<option value="${i.id}"${i.id===t.instrument?' selected':''}>${i.name}</option>`).join('')+(t.audio?`<option value="audio"${t.instrument==='audio'?' selected':''}>원래 녹음 소리</option>`:'');
     row.innerHTML=`<div class="bar" style="background:${t.color}"></div>
      <div class="nm"><input type="text" value="" aria-label="트랙 이름"><span class="meta">${t.notes.length}개 음표${t.audio?' · 원음 '+fmtBytes(t.audio.size):''}</span>${t.audio?'<button class="lsn">▶ 녹음 듣기</button>':''}</div>
-     <select class="inst" aria-label="악기">${instOpts}</select>
+     <label class="instw"><span>악기</span><select class="inst" aria-label="악기">${instOpts}</select></label>
      <input class="vol" type="range" min="0" max="1" step="0.01" value="${t.volume}" aria-label="트랙 음량">
      <div class="btns"><button class="m${t.muted?' on':''}" title="이 트랙 끄기">끔</button><button class="s${t.solo?' on':''}" title="이 트랙만 듣기">솔로</button><button class="x" title="트랙 삭제" aria-label="트랙 삭제">✕</button></div>`;
     const nm=row.querySelector('.nm input'); nm.value=t.name; nm.onchange=()=>{t.name=nm.value.trim()||t.name; scheduleSave(); updateTitle();};
@@ -1717,6 +1721,31 @@ function makeIntroOutro(){ const a=arrangeInfo(); if(!a){ toast('멜로디가 �
   if(doO){ const end=Math.max(...project.tracks.flatMap(t=>t.notes.map(n=>n.s+n.d))); const startBar=Math.ceil(end/bar-.02); const r=genIntroOutro(a.key,mood,'outro',startBar*bar); r.tracks.forEach(x=>{ addTrack({name:x.name,instrument:x.instrument,volume:.75,notes:x.notes}); added.push(x.name); }); }
   activeTrackId=a.t.id; renderTracks(); fitView(); drawRoll(); scheduleSave(); toast(`${added.join(', ')} 트랙을 만들었어요.${doI?' 전주만큼 곡 전체가 뒤로 밀렸어요(되돌리기 가능).':''} 마음에 안 들면 트랙 ✕로 지우세요.`,6000); }
 
+
+/* ================= manual entry: empty track & typed notes ================= */
+const KO_MAP={'도':0,'레':2,'미':4,'파':5,'솔':7,'라':9,'시':11,'c':0,'d':2,'e':4,'f':5,'g':7,'a':9,'b':11};
+function parseNoteText(text,baseBeats){ const toks=text.replace(/[,，]/g,' ').split(/\s+/).filter(Boolean); const out=[]; const bad=[]; let oct=4;
+  for(const raw of toks){ let t=raw; let m=t.match(/^(쉼|_|\.|r)(-*)(\/?)$/i); const dur=len=>baseBeats*len;
+    if(m){ const len=(1+m[2].length)*(m[3]?.5:1); out.push({rest:true,beats:dur(len)}); continue; }
+    m=t.match(/^(도|레|미|파|솔|라|시|[a-gA-G])([#♯]|[b♭])?(\d)?([\^v]*)(-*)(\/*)$/); if(!m){ bad.push(raw); continue; }
+    let pc=KO_MAP[m[1].toLowerCase()]; if(m[2]==='#'||m[2]==='♯') pc+=1; if(m[2]==='b'||m[2]==='♭') pc-=1; let o=m[3]?+m[3]:oct; for(const ch of m[4]) o+=ch==='^'?1:-1;
+    const len=(1+m[5].length)*Math.pow(.5,m[6].length); out.push({p:clamp((o+1)*12+pc,21,108),beats:dur(len)}); }
+  return {notes:out,bad}; }
+function newEmptyTrack(){ const t=addTrack({name:'직접 입력 '+(project.tracks.length+1)}); renderTracks(); drawRoll(); scheduleSave(); toast('빈 트랙을 만들었어요. ‘그리기’로 음표를 찍거나 ‘타이핑으로 넣기’를 쓰세요.',4500); return t; }
+function openTypeEntry(){ if(!project) return; showOverlay('',null); const msg=$('#ovMsg'); const beat=60/project.bpm;
+  msg.innerHTML=`<b>타이핑으로 음표 넣기</b><div class="hint" style="margin:4px 0 8px">계이름을 띄어쓰기로 적으세요. <b>-</b>는 길게(한 칸 더), <b>/</b>는 반으로, <b>쉼</b>은 쉼표, <b>#</b>·<b>b</b>는 반음, 숫자는 옥타브(기본 4), <b>^</b>·<b>v</b>는 한 옥타브 위·아래. 영어 c d e f g a b도 돼요.<br>예: <code>도 도 솔 솔 라 라 솔- 파 파 미 미 레 레 도-</code></div>
+   <textarea id="teText" rows="4" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:inherit"></textarea>
+   <div class="row" style="justify-content:flex-start;margin-top:8px;gap:12px;flex-wrap:wrap"><label>한 글자 길이 <select id="teLen"><option value="1">1박</option><option value="0.5" selected>½박</option><option value="0.25">¼박</option><option value="2">2박</option></select></label>
+   <label>넣을 위치 <select id="tePos"><option value="end">트랙 끝에 이어서</option><option value="play">재생 위치부터</option><option value="bar">1마디 처음부터</option></select></label>
+   <label><input type="checkbox" id="teLH"> 왼손으로 표시</label></div>`;
+  const bx=$('#ovBtns'); const c=document.createElement('button'); c.textContent='취소'; const o=document.createElement('button'); o.textContent='넣기'; o.className='on';
+  c.onclick=()=>{ hideOverlay(); msg.innerHTML=''; };
+  o.onclick=()=>{ const {notes,bad}=parseNoteText($('#teText').value,+$('#teLen').value); if(bad.length){ toast('읽을 수 없는 글자: '+bad.slice(0,5).join(', ')); return; } if(!notes.length){ toast('넣을 음표가 없어요.'); return; }
+    let t=activeTrack(); if(!t) t=newEmptyTrack(); const posSel=$('#tePos').value; let s=posSel==='play'?pos:posSel==='bar'?0:(t.notes.length?Math.max(...t.notes.map(n=>n.s+n.d)):0); if(posSel==='end'&&gridSec()) s=Math.round(s/gridSec())*gridSec();
+    const lh=$('#teLH').checked; hideOverlay(); msg.innerHTML='';
+    edit(tr=>{ for(const n of notes){ const d=n.beats*beat; if(!n.rest) tr.notes.push({id:nid(),p:n.p,s,d:d*.92,v:95,h:lh?'L':'R'}); s+=d; } }); fitView(activeTrack()); drawRoll(); toast(`음표 ${notes.filter(n=>!n.rest).length}개를 넣었어요.`); };
+  bx.append(c,o); $('#teText').focus(); }
+
 /* ================= init & wiring ================= */
 async function init(){
   roll.cv=$('#roll'); roll.g=roll.cv.getContext('2d'); readColors();
@@ -1756,6 +1785,7 @@ async function init(){
   try{ const v=localStorage.getItem('hps-autosave'); if(v!==null) $('#autoSaveRec').checked=v==='1'; }catch(e){}
   $('#autoSaveRec').onchange=e=>{ try{ localStorage.setItem('hps-autosave',e.target.checked?'1':'0'); }catch(_){} };
   $('#recDirBtn').onclick=pickRecDir;
+  $('#newTrackBtn').onclick=newEmptyTrack; $('#typeBtn').onclick=openTypeEntry;
   const setFold=(cls,on,btn,label)=>{ document.body.classList.toggle(cls,on); $(btn).textContent=on?'▼ 펼치기':'▲ 접기'; try{ localStorage.setItem('hps-'+cls,on?'1':'0'); }catch(e){} if(cls==='roll-folded'&&!on) setTimeout(resizeRoll,0); };
   $('#deckToggle').onclick=()=>setFold('deck-folded',!document.body.classList.contains('deck-folded'),'#deckToggle');
   $('#rollToggle').onclick=()=>setFold('roll-folded',!document.body.classList.contains('roll-folded'),'#rollToggle');
