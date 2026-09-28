@@ -1,0 +1,13 @@
+test_build_preserves_assets (test_build_v1.V1Tests.test_build_preserves_assets) ... ok
+test_database_unchanged (test_build_v1.V1Tests.test_database_unchanged) ... ok
+test_embedded_print_html_not_mistaken_for_document (test_build_v1.V1Tests.test_embedded_print_html_not_mistaken_for_document) ... ok
+test_missing_asset_fails_before_output (test_build_v1.V1Tests.test_missing_asset_fails_before_output) ... ok
+test_output_never_overwritten (test_build_v1.V1Tests.test_output_never_overwritten) ... ok
+test_repeat_rejected (test_build_v1.V1Tests.test_repeat_rejected) ... ok
+test_reversible_patch (test_build_v1.V1Tests.test_reversible_patch) ... ok
+test_wrong_input_rejected (test_build_v1.V1Tests.test_wrong_input_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.011s
+
+OK
